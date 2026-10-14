@@ -4,10 +4,7 @@
 //! nanosecond arithmetic, so values at the duration boundary and at the int64
 //! payload limits wrap instead of being rejected. The committed DB-004 fixture
 //! only covers ordinary fractional and negative values, so this test pins the
-//! boundary behaviour against actual native Go observations, with explicit live mode.
-
-#[path = "support/go_oracle.rs"]
-mod go_oracle;
+//! boundary behaviour against actual recorded native Go observations.
 
 #[path = "support/frozen_native_capture.rs"]
 mod frozen_native_capture;
@@ -34,19 +31,9 @@ struct OracleOutput {
 
 fn run_go_oracle() -> OracleOutput {
     match std::env::var("SYMERASEME_PARITY_LIVE_GO").as_deref() {
-        Ok("1") => {}
-        Ok("0") | Err(std::env::VarError::NotPresent) => {
-            return frozen_output(frozen_bytes());
-        }
-        _ => panic!("SYMERASEME_PARITY_LIVE_GO must be 0 or 1"),
+        Ok("0") | Err(std::env::VarError::NotPresent) => frozen_output(frozen_bytes()),
+        _ => panic!("live Go execution is retired; SYMERASEME_PARITY_LIVE_GO must be 0 or unset"),
     }
-    let run = go_oracle::run_oracle("projection", None);
-    assert!(
-        run.status.success(),
-        "Go projection oracle failed: {}",
-        String::from_utf8_lossy(&run.stderr)
-    );
-    serde_json::from_slice(&run.stdout).expect("Go projection oracle must emit JSON")
 }
 
 fn frozen_bytes() -> &'static [u8] {
@@ -83,20 +70,15 @@ fn frozen_output(bytes: &[u8]) -> OracleOutput {
     );
     assert_eq!(manifest["go_version"], "go1.26.6");
     assert_eq!(manifest["native_target"], target);
-    for (path, source) in [
-        (
-            "rust-tests/parity/oracle/projection/cases.json",
-            CASES.as_bytes(),
-        ),
-        (
-            "rust-tests/parity/oracle/projection/main.go",
-            include_bytes!("../../../rust-tests/parity/oracle/projection/main.go").as_slice(),
-        ),
-        (
-            "internal/eventstore/projection.go",
-            include_bytes!("../../../internal/eventstore/projection.go").as_slice(),
-        ),
+    for path in [
+        "rust-tests/parity/oracle/projection/cases.json",
+        "rust-tests/parity/oracle/projection/main.go",
+        "internal/eventstore/projection.go",
     ] {
+        let source = frozen_native_capture::go_source_pin::current_source(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
+            path,
+        );
         assert_eq!(manifest["source_files"][path]["bytes"], source.len());
         assert_eq!(
             manifest["source_files"][path]["sha256"],

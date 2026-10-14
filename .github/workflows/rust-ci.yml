@@ -7,12 +7,7 @@ on:
     branches: [main]
   schedule:
     - cron: '43 5 * * 1'
-  workflow_dispatch:
-    inputs:
-      capture_frozen_oracles:
-        description: Capture actual native Go service/projection observations for reviewed freezing
-        type: boolean
-        default: false
+  workflow_dispatch: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,6 +20,7 @@ env:
   RUST_TOOLCHAIN: '1.98.0'
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: '0'
+  SYMERASEME_PARITY_LIVE_GO: '0'
 
 jobs:
   rust-pr:
@@ -37,14 +33,6 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.26.6'
-
-      - name: Download Go oracle modules
-        run: go mod download
 
       - name: Cache Cargo dependencies and target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -111,85 +99,7 @@ jobs:
 
       - name: Rust line coverage gate
         shell: bash
-        run: |
-          set -euo pipefail
-          critical_pattern='/(crypto|consent|auth|mcp)(/|\.rs$)'
-          # A module file that only declares children and re-exports emits no code,
-          # so LLVM coverage can never report measurable lines for it. Such
-          # declaration-only facades are excluded from the expectation set and
-          # announced. Any file containing a code-bearing item stays critical, so a
-          # genuinely uninstrumented crypto/consent/auth/MCP module still fails.
-          code_item_pattern='^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?(async[[:space:]]+|unsafe[[:space:]]+|const[[:space:]]+)?(fn|impl|trait|struct|enum|union|const|static|type|macro_rules!|extern)([^[:alnum:]_]|$)'
-          critical_files=()
-          declaration_only=()
-          while IFS= read -r file; do
-            if grep -Eq "$code_item_pattern" "$file"; then
-              critical_files+=("$file")
-            else
-              declaration_only+=("$file")
-            fi
-          done < <(
-            find crates -type f -name '*.rs' -not -path '*/commands/*' -print |
-              grep -Ei "$critical_pattern" || true
-          )
-          if [[ ${#declaration_only[@]} -gt 0 ]]; then
-            echo "::notice::Declaration-only critical modules carry no executable lines and are excluded from the coverage expectation: ${declaration_only[*]}"
-          fi
-          if [[ ${#critical_files[@]} -eq 0 ]]; then
-            echo '::notice::Rust coverage thresholds are fail-closed for the foundation scaffold: no first-party crypto, consent/auth, or MCP modules exist yet, so no coverage claim is reported.'
-            exit 0
-          fi
-          coverage_json="$RUNNER_TEMP/rust-coverage.json"
-          cargo +"$RUST_TOOLCHAIN" llvm-cov --workspace --all-features --json \
-            --output-path "$coverage_json" --fail-under-lines 80
-          python3 - "$coverage_json" 90 "${critical_files[@]}" <<'PY'
-          import json
-          import pathlib
-          import sys
-
-          report_path = pathlib.Path(sys.argv[1])
-          threshold = float(sys.argv[2])
-          expected = {(pathlib.Path.cwd() / path).resolve() for path in sys.argv[3:]}
-          report = json.loads(report_path.read_text())
-          data = report.get("data")
-          if not isinstance(data, list) or len(data) != 1:
-              raise SystemExit("coverage report must contain exactly one data entry")
-          if not isinstance(data[0], dict) or not isinstance(data[0].get("files"), list):
-              raise SystemExit("coverage report has a malformed files list")
-          files = {}
-          for entry in data[0]["files"]:
-              if not isinstance(entry, dict):
-                  raise SystemExit("coverage report has a malformed file entry")
-              raw_filename = entry.get("filename")
-              summary = entry.get("summary")
-              if not isinstance(raw_filename, str) or not raw_filename or not isinstance(summary, dict):
-                  raise SystemExit("coverage report has a malformed file entry")
-              lines = summary.get("lines")
-              if not isinstance(lines, dict):
-                  raise SystemExit("coverage report has a malformed line summary")
-              count = lines.get("count")
-              covered = lines.get("covered")
-              if type(count) is not int or type(covered) is not int:
-                  raise SystemExit("coverage report has malformed line counts")
-              if count < 0 or covered < 0 or covered > count:
-                  raise SystemExit("coverage report has invalid line counts")
-              filename = pathlib.Path(raw_filename).resolve()
-              if filename in files:
-                  raise SystemExit(f"coverage report has duplicate file entry: {filename}")
-              files[filename] = (count, covered)
-          missing = sorted(str(path) for path in expected if path not in files)
-          if missing:
-              raise SystemExit(f"critical coverage files missing from report: {missing}")
-          counts = [files[path] for path in expected]
-          if any(count == 0 for count, _ in counts):
-              raise SystemExit("critical coverage file contains no measurable lines")
-          total = sum(count for count, _ in counts)
-          covered = sum(value for _, value in counts)
-          percent = covered * 100 / total
-          print(f"Critical Rust line coverage: {percent:.2f}% ({covered}/{total}), gate: {threshold:.0f}%")
-          if percent < threshold:
-              raise SystemExit(1)
-          PY
+        run: bash scripts/check-rust-coverage.sh
 
       - name: Upload Rust coverage diagnostics
         if: always()
@@ -230,10 +140,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.26.6'
+          fetch-depth: 0 # Frozen readers authenticate immutable producer blobs.
       - name: Cache Cargo dependencies and target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -246,8 +153,6 @@ jobs:
       - name: Install pinned Rust toolchain
         shell: bash
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
-      - name: Download Go oracle modules
-        run: go mod download
       - name: Check and lint Windows code
         shell: bash
         run: |
@@ -256,7 +161,7 @@ jobs:
       - name: Run Windows neutral parity tests
         shell: bash
         run: cargo +"$RUST_TOOLCHAIN" test -p parity --all-features --locked --no-fail-fast
-      - name: Compare native Windows MCP HTTP against Go
+      - name: Replay native Windows MCP HTTP against frozen Go observations
         shell: bash
         run: cargo +"$RUST_TOOLCHAIN" test -p symeraseme-cli --test mcp_http_windows_process --locked -- --test-threads=1
 
@@ -314,43 +219,14 @@ jobs:
         shell: bash
         run: |
           git fetch --no-tags --no-write-fetch-head --depth=1 origin 0bc6b051890340822448fa3846c96f70022b79ad
-          git cat-file -e 0bc6b051890340822448fa3846c96f70022b79ad^{commit}
+          git cat-file -e '0bc6b051890340822448fa3846c96f70022b79ad^{commit}'
 
-      - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: '1.26.6'
-
-      - name: Download Go oracle modules
-        run: go mod download
-
-      - name: Capture actual native Go observations for reviewed freezing
-        if: github.event_name == 'workflow_dispatch' && inputs.capture_frozen_oracles
-        run: python3 scripts/capture-frozen-go-services.py --output "${{ runner.temp }}/frozen-go-services"
-
-      - name: Upload native Go observations for fixture review
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.capture_frozen_oracles
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: frozen-go-services-${{ runner.os }}-${{ runner.arch }}
-          if-no-files-found: error
-          retention-days: 7
-          path: |
-            ${{ runner.temp }}/frozen-go-services/manifest.json
-            ${{ runner.temp }}/frozen-go-services/*.stdout
-            ${{ runner.temp }}/frozen-go-services/*.stderr
-            ${{ runner.temp }}/frozen-go-services/scheduler-install.observations.json
-            ${{ runner.temp }}/frozen-go-services/campaign-plan.observations.json
-            ${{ runner.temp }}/frozen-go-services/provider-cancel.observations.json
-            ${{ runner.temp }}/frozen-go-services/cli-grant-case-*-consent-*.observations.json
-
-      - name: Check MCP stdio oracle without rewriting fixtures
+      - name: Check frozen MCP stdio corpus and cleanup controls
         shell: bash
         run: |
           set -euo pipefail
           python3 tests/test_mcp_stdio_oracle_check.py
           python3 tests/test_mcp_stdio_oracle_cleanup.py
-          python3 rust-tests/parity/oracle/mcp-stdio-mutations/generate.py "$(command -v go)" --check
 
       - name: Cache Cargo dependencies and target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -387,87 +263,81 @@ jobs:
               cargo +"$RUST_TOOLCHAIN" check -p symeraseme-core --locked
           )
 
-      - name: Capture original actual native Go process references
-        if: github.event_name == 'workflow_dispatch' && inputs.capture_frozen_oracles
-        shell: bash
-        run: python3 scripts/capture-native-process-references.py --output-root "${{ runner.temp }}"
-
-      - name: Test and doctest
-        env:
-          SYMERASEME_PARITY_LIVE_GO: ${{ github.event_name == 'workflow_dispatch' && inputs.capture_frozen_oracles && '1' || '0' }}
+      - name: Replay all 678 frozen MCP stdio observations through Rust
         shell: bash
         run: |
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            cargo +"$RUST_TOOLCHAIN" test --workspace --all-features --locked --no-fail-fast
-            cargo +"$RUST_TOOLCHAIN" test --workspace --doc --all-features --locked
-          else
-            cargo +"$RUST_TOOLCHAIN" test --workspace --all-features --locked
-            cargo +"$RUST_TOOLCHAIN" test --workspace --doc --all-features --locked
-          fi
+          set -euo pipefail
+          cargo +"$RUST_TOOLCHAIN" test -p symeraseme-cli --test mcp_stdio_mutation_process --locked \
+            -- --exact malformed_and_boundary_stdio_matches_source_bound_go_process \
+            2>&1 | tee "$RUNNER_TEMP/mcp-stdio-replay.log"
+          grep -Eq 'test result: ok\. 1 passed; 0 failed; 0 ignored;' "$RUNNER_TEMP/mcp-stdio-replay.log"
+
+      - name: Retain frozen MCP stdio replay diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcp-stdio-replay-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/mcp-stdio-replay.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Test and doctest
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cargo +"$RUST_TOOLCHAIN" test --workspace --all-features --locked
+          cargo +"$RUST_TOOLCHAIN" test --workspace --doc --all-features --locked
+
+      - name: Capture independent Windows identity for workspace tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          EXPECTED_ARCH: ${{ runner.arch }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          $artifact = Join-Path $env:RUNNER_TEMP 'rust-native-identity/baseline.json'
+          ./scripts/capture-windows-identity.ps1 -Mode Capture -ExpectedArch $env:EXPECTED_ARCH -ExpectedRevision $env:EXPECTED_REVISION -ArtifactPath $artifact
+
+      - name: Windows test and doctest with verified native identity
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          EXPECTED_ARCH: ${{ runner.arch }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          $artifact = Join-Path $env:RUNNER_TEMP 'rust-native-identity/baseline.json'
+          $env:SYMERASEME_WINDOWS_IDENTITY_BASELINE = $artifact
+          $raw = & cargo "+$env:RUST_TOOLCHAIN" metadata --locked --no-deps --format-version 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $metadata = $raw | ConvertFrom-Json
+          $packages = @($metadata.packages | Where-Object { $_.id -in $metadata.workspace_members })
+          if ($packages.Count -eq 0 -or $packages.Count -ne $metadata.workspace_members.Count) {
+            throw 'Workspace test package inventory is incomplete'
+          }
+          # Each package retains the identity check and unchanged 24-minute bound.
+          # The complete ARM64 workspace exceeds that bound as a single child.
+          $tests = @'
+          set -euo pipefail
+          cargo +"$RUST_TOOLCHAIN" test -p "$SYMERASEME_CI_TEST_PACKAGE" --all-features --locked --no-fail-fast
+          '@
+          $failed = $false
+          foreach ($package in $packages) {
+            $env:SYMERASEME_CI_TEST_PACKAGE = $package.name
+            Write-Output "Native workspace package: $($package.name)"
+            ./scripts/capture-windows-identity.ps1 -Mode Verify -ExpectedArch $env:EXPECTED_ARCH -ExpectedRevision $env:EXPECTED_REVISION -ArtifactPath $artifact -BashScript $tests
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+          }
+          $docs = @'
+          set -euo pipefail
+          cargo +"$RUST_TOOLCHAIN" test --workspace --doc --all-features --locked
+          '@
+          ./scripts/capture-windows-identity.ps1 -Mode Verify -ExpectedArch $env:EXPECTED_ARCH -ExpectedRevision $env:EXPECTED_REVISION -ArtifactPath $artifact -BashScript $docs
+          if ($LASTEXITCODE -ne 0) { $failed = $true }
+          if ($failed) { exit 1 }
 
       - name: Verify recorded whole plan and Unix processes with Go absent on all six native hosts
         shell: bash
         run: python3 scripts/verify-frozen-plan-without-go.py
-
-      - name: Upload actual Go plan process observations
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.capture_frozen_oracles
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: frozen-go-plan-processes-${{ runner.os }}-${{ runner.arch }}
-          if-no-files-found: error
-          retention-days: 7
-          path: |
-            ${{ runner.temp }}/frozen-go-plan-processes/web-form.json
-            ${{ runner.temp }}/frozen-go-plan-processes/senderless-email.json
-
-      - name: Upload actual native Go triage observations
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.capture_frozen_oracles
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: frozen-go-native-triage-${{ runner.os }}-${{ runner.arch }}
-          if-no-files-found: error
-          retention-days: 7
-          path: |
-            ${{ runner.temp }}/frozen-go-native-triage/cli.json
-            ${{ runner.temp }}/frozen-go-native-triage/mcp.json
-
-      - name: Upload actual native Go agent-error observation
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.capture_frozen_oracles
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: frozen-go-agent-error-${{ runner.os }}-${{ runner.arch }}
-          if-no-files-found: error
-          retention-days: 7
-          path: ${{ runner.temp }}/frozen-go-agent-error/agent-error.json
-
-      - name: Upload actual Go HTTP wire observations
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.capture_frozen_oracles && runner.os != 'Windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: frozen-go-http-wire-${{ runner.os }}-${{ runner.arch }}
-          if-no-files-found: error
-          retention-days: 7
-          path: ${{ runner.temp }}/frozen-go-http-wire/wire.json
-
-      - name: Upload actual complete Go HTTP response observations
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.capture_frozen_oracles
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: frozen-go-http-headers-${{ runner.os }}-${{ runner.arch }}
-          if-no-files-found: error
-          retention-days: 7
-          path: ${{ runner.temp }}/frozen-go-http-headers/headers.json
-
-      - name: Upload actual Go SMTP process and transaction observations
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.capture_frozen_oracles
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: frozen-go-smtp-${{ runner.os }}-${{ runner.arch }}
-          if-no-files-found: error
-          retention-days: 7
-          path: |
-            ${{ runner.temp }}/frozen-go-smtp/campaign.json
-            ${{ runner.temp }}/frozen-go-smtp/transport.json
 
       - name: Run neutral parity subset on Unix
         if: runner.os != 'Windows'

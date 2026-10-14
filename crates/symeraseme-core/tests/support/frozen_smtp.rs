@@ -6,7 +6,7 @@ use std::path::{Component, Path};
 use std::process::Command;
 
 #[path = "../../../symeraseme-cli/tests/support/go_source_pin.rs"]
-mod go_source_pin;
+pub(crate) mod go_source_pin;
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 // Populate only after retaining and independently verifying actual native captures.
@@ -163,6 +163,24 @@ fn verify(raw: &[u8], pin: &str, revision: &str, target: &str, family: &str) -> 
                 archive.status.success(),
                 "immutable HTTP producer must remain verifiable"
             );
+            // The former capture producers are retired or Rust-only replay tests.
+            // Bind their original bytes to the independent retirement commit,
+            // not to the changed replay implementation. All other inputs retain
+            // the current-tree check below, including Cargo.lock.
+            let retired_producer = field == "archived_generators"
+                && matches!(
+                    name.as_str(),
+                    "crates/symeraseme-core/tests/campaign_smtp.rs"
+                        | "crates/symeraseme-core/tests/smtp_transport.rs"
+                        | "crates/symeraseme-core/tests/support/capture_smtp.rs"
+                );
+            if retired_producer {
+                go_source_pin::assert_retired_generator_matches_archive(
+                    ROOT,
+                    name,
+                    &archive.stdout,
+                );
+            }
             let archived_bytes = if field == "archived_generators" && target.starts_with("windows/")
             {
                 assert!(!archive.stdout.windows(2).any(|bytes| bytes == b"\r\n"));
@@ -179,8 +197,8 @@ fn verify(raw: &[u8], pin: &str, revision: &str, target: &str, family: &str) -> 
             };
             assert_eq!(recorded["bytes"], archived_bytes.len(), "{name}");
             assert_eq!(recorded["sha256"], digest(&archived_bytes), "{name}");
-            if go_source_pin::current_tree_bound(name) {
-                let current = std::fs::read(Path::new(ROOT).join(path)).unwrap();
+            if !retired_producer && go_source_pin::current_tree_bound(name) {
+                let current = go_source_pin::current_source(ROOT, name);
                 go_source_pin::assert_current_matches_archive(name, &archived_bytes, &current);
             }
         }
@@ -264,14 +282,14 @@ impl Corpus {
     }
 }
 
-pub fn observations(family: &str) -> Option<Corpus> {
-    if std::env::var_os("SYMERASEME_CAPTURE_SMTP").is_some_and(|value| !value.is_empty()) {
-        return None;
-    }
+pub fn observations(family: &str) -> Corpus {
+    assert!(
+        !std::env::var_os("SYMERASEME_CAPTURE_SMTP").is_some_and(|value| !value.is_empty()),
+        "live Go capture is retired; use the immutable historical capture producer"
+    );
     match std::env::var("SYMERASEME_PARITY_LIVE_GO").as_deref() {
-        Ok("1") => return None,
         Ok("0") | Err(std::env::VarError::NotPresent) => {}
-        _ => panic!("SYMERASEME_PARITY_LIVE_GO must be 0 or 1"),
+        _ => panic!("live Go execution is retired; SYMERASEME_PARITY_LIVE_GO must be 0 or unset"),
     }
     let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "linux/amd64",
@@ -280,11 +298,12 @@ pub fn observations(family: &str) -> Option<Corpus> {
         ("windows", "aarch64") => "windows/arm64",
         ("macos", "x86_64") => "darwin/amd64",
         ("macos", "aarch64") => "darwin/arm64",
-        _ => return None,
+        _ => panic!("no recorded native SMTP capture for this target; live Go is retired"),
     };
     let (_, _, revision, pin, raw) = RECORDS
         .iter()
-        .find(|record| record.0 == target && record.1 == family)?;
+        .find(|record| record.0 == target && record.1 == family)
+        .expect("no recorded SMTP family for the native target");
     let record = verify(raw, pin, revision, target, family);
     let mut corrupt = raw.to_vec();
     corrupt.push(b'!');
@@ -305,5 +324,5 @@ pub fn observations(family: &str) -> Option<Corpus> {
         ))
         .is_err()
     );
-    Some(Corpus(record))
+    Corpus(record)
 }

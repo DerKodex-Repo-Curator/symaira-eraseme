@@ -1087,6 +1087,9 @@ fn is_executable(path: &Path) -> bool {
 }
 
 #[cfg(test)]
+use crate::go_source_pin;
+
+#[cfg(test)]
 #[path = "agent_path_tests.rs"]
 mod agent_path_tests;
 

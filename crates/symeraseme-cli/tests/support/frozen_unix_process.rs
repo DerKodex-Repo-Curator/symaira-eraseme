@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Component, Path};
 
 #[path = "go_source_pin.rs"]
-mod go_source_pin;
+pub mod go_source_pin;
 
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const REVISION: &str = "13ddc6a43036d6b34706db2b82bbb5a13c40d6de";
@@ -96,7 +96,7 @@ fn verify(manifest: &[u8], pin: &str, target: &str, family: &str, stdout: &[u8],
         if !go_source_pin::current_tree_bound(name) {
             continue;
         }
-        let bytes = std::fs::read(Path::new(ROOT).join(path)).unwrap();
+        let bytes = go_source_pin::current_source(ROOT, name);
         assert_eq!(record["bytes"], bytes.len(), "{name}");
         assert_eq!(record["sha256"], digest(&bytes), "{name}");
     }
@@ -132,13 +132,21 @@ fn verify(manifest: &[u8], pin: &str, target: &str, family: &str, stdout: &[u8],
     assert_eq!(record["cases"].as_array().unwrap().len(), count);
 }
 
-pub fn observation(family: &str) -> Option<Vec<u8>> {
+pub fn observation(family: &str) -> Vec<u8> {
     match std::env::var("SYMERASEME_PARITY_LIVE_GO").as_deref() {
-        Ok("1") => return None,
         Ok("0") | Err(std::env::VarError::NotPresent) => {}
+        Ok("1") => panic!(
+            "SYMERASEME_PARITY_LIVE_GO=1 is retired: live Go dispatch was removed; use the recorded frozen capture"
+        ),
         _ => panic!("SYMERASEME_PARITY_LIVE_GO must be 0 or 1"),
     }
-    let (target, manifest, pin) = native_manifest()?;
+    let Some((target, manifest, pin)) = native_manifest() else {
+        panic!(
+            "no recorded native Go capture for {}/{}; unsupported host fails closed",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
+    };
     let (stdout, stderr) = streams(family);
     verify(manifest, pin, target, family, stdout, stderr);
     // The actual recorded comparator must reject changed whole frames before
@@ -173,5 +181,5 @@ pub fn observation(family: &str) -> Option<Vec<u8>> {
         ))
         .is_err()
     );
-    Some(stdout.to_vec())
+    stdout.to_vec()
 }

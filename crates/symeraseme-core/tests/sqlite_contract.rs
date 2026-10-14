@@ -1,7 +1,5 @@
 #[path = "support/frozen_native_capture.rs"]
 mod frozen_native_capture;
-#[path = "support/go_oracle.rs"]
-mod go_oracle;
 
 use std::{
     fs,
@@ -46,7 +44,12 @@ const GO_EVENT_STORE_SOURCE_PATH: &str = "internal/eventstore/store.go";
 const GO_EVENT_STORE_SOURCE_GIT_BLOB: &str = "2201ac9ffd929f871fbd54f9e7e77eb59749c5a6";
 const GO_EVENT_STORE_SOURCE_SHA256: &str =
     "fd1dd416606f29aa4726a62ffe6ad83ef9d7c9eb6c6f42d81e87987913968df3";
-const GO_EVENT_STORE_SOURCE: &[u8] = include_bytes!("../../../internal/eventstore/store.go");
+fn go_event_store_source() -> Vec<u8> {
+    frozen_native_capture::go_source_pin::current_source(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
+        GO_EVENT_STORE_SOURCE_PATH,
+    )
+}
 const STORAGE_ORACLE_SCHEMA: &str = "symaira-eraseme.storage-parity.v1";
 
 fn golden_database() -> &'static [u8] {
@@ -122,10 +125,8 @@ fn validate_immutable_database_sources(database: &[u8]) -> Result<(), String> {
         &immutable_go_source,
         GO_EVENT_STORE_SOURCE_SHA256,
     )?;
-    if immutable_go_source != GO_EVENT_STORE_SOURCE {
-        return Err(
-            "working-tree Go event-store source differs from immutable Go provenance".into(),
-        );
+    if immutable_go_source != go_event_store_source() {
+        return Err("retired Go event-store source differs from immutable Go provenance".into());
     }
     Ok(())
 }
@@ -206,63 +207,17 @@ fn canonical_sql(sql: &str) -> String {
 
 fn run_go_storage_oracle() -> serde_json::Value {
     match std::env::var("SYMERASEME_PARITY_LIVE_GO").as_deref() {
-        Ok("1") => {}
-        Ok("0") | Err(std::env::VarError::NotPresent) => {
-            if frozen_native_capture::manifest_bytes(std::env::consts::OS, std::env::consts::ARCH)
-                .is_some()
-            {
-                return verified_frozen_storage(include_bytes!(
-                    "../../../tests/fixtures/go-frozen/storage/storage.stdout"
-                ));
-            }
-        }
-        _ => panic!("SYMERASEME_PARITY_LIVE_GO must be 0 or 1"),
+        Ok("0") | Err(std::env::VarError::NotPresent) => verified_frozen_storage(include_bytes!(
+            "../../../tests/fixtures/go-frozen/storage/storage.stdout"
+        )),
+        _ => panic!("live Go execution is retired; SYMERASEME_PARITY_LIVE_GO must be 0 or unset"),
     }
-    let build_cache = tempdir().expect("create isolated Go build cache");
-    let repository = repository_root();
-    // Both phases go through the shared bounded runner. `go run` recompiles the
-    // oracle on every call, so the compile cost came out of the runtime budget
-    // here too — the same defect #912 fixed for the other three call sites.
-    let scratch = tempdir().expect("oracle output scratch");
-    let mut go_test = go_oracle::go_command(&repository, build_cache.path());
-    go_test.args([
-        "test",
-        "-tags",
-        "storage_oracle",
-        "./rust-tests/parity/oracle/storage",
-    ]);
-    let test_output = go_oracle::run_bounded(
-        go_test,
-        None,
-        &scratch.path().join("go-test.stdout"),
-        &scratch.path().join("go-test.stderr"),
-        go_oracle::ORACLE_BUILD_TIMEOUT,
-    )
-    .expect("run the committed Go storage oracle negative controls");
-    assert!(
-        test_output.status.success(),
-        "Go storage oracle negative controls failed: {}",
-        String::from_utf8_lossy(&test_output.stderr)
-    );
-
-    let output = go_oracle::run_oracle_with_tags(
-        "storage",
-        &["storage_oracle"],
-        build_cache.path(),
-        &repository,
-    );
-    assert!(
-        output.status.success(),
-        "Go storage oracle failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).expect("Go storage oracle must emit valid JSON")
 }
 
 fn verified_frozen_storage(bytes: &[u8]) -> serde_json::Value {
     let native = frozen_native_capture::verify(
         frozen_native_capture::manifest_bytes(std::env::consts::OS, std::env::consts::ARCH)
-            .expect("unrecorded native storage target must use the actual Go producer"),
+            .expect("no recorded native storage capture for this target; live Go is retired"),
         std::env::consts::OS,
         std::env::consts::ARCH,
     );
@@ -360,7 +315,7 @@ fn verified_frozen_storage(bytes: &[u8]) -> serde_json::Value {
     validate_immutable_database_sources(GOLDEN_DATABASE).unwrap();
     assert_eq!(
         manifest["source_files"][GO_EVENT_STORE_SOURCE_PATH]["sha256"],
-        hex::encode(Sha256::digest(GO_EVENT_STORE_SOURCE))
+        hex::encode(Sha256::digest(go_event_store_source()))
     );
     let document: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(document.as_object().unwrap().len(), 3);

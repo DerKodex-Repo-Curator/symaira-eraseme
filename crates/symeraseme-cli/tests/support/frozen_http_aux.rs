@@ -21,7 +21,7 @@ const SOURCE_ROOTS: [&str; 4] = [
 ];
 // (target, test, source revision, whole-record SHA-256, record). Populate only
 // after retaining and independently verifying actual native captures.
-const RECORDS: &[(&str, &str, &str, &str, &[u8])] = &[
+pub(crate) const RECORDS: &[(&str, &str, &str, &str, &[u8])] = &[
     (
         "linux/arm64",
         "live_http_disconnect_cancels_and_reaps_host_agent_like_go",
@@ -399,8 +399,18 @@ pub fn verify(
             ]);
             assert_eq!(recorded["bytes"], archive.len(), "{name}");
             assert_eq!(recorded["sha256"], digest(&archive), "{name}");
-            if go_source_pin::current_tree_bound(name) {
-                let current = std::fs::read(Path::new(ROOT).join(path)).unwrap();
+            let retired_producer = field == "archived_generators"
+                && matches!(
+                    name.as_str(),
+                    "crates/symeraseme-cli/tests/mcp_http_process.rs"
+                        | "crates/symeraseme-cli/tests/mcp_http_native_contract.rs"
+                        | "crates/symeraseme-cli/tests/support/capture_http_aux.rs"
+                );
+            if retired_producer {
+                let producer = git(&["cat-file", "blob", &format!("{revision}:{name}")]);
+                go_source_pin::assert_retired_generator_matches_archive(ROOT, name, &producer);
+            } else if go_source_pin::current_tree_bound(name) {
+                let current = go_source_pin::current_source(ROOT, name);
                 go_source_pin::assert_current_matches_archive(name, &archive, &current);
             }
         }

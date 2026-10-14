@@ -3,7 +3,6 @@ mod frozen_native_capture;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::path::Path;
 
 pub use frozen_native_capture::go_source_pin;
 
@@ -28,14 +27,13 @@ macro_rules! streams {
     };
 }
 
-// Review has measured native records on all six targets.
-pub fn live_review_required() -> bool {
+// Live Go producer mode is retired. SYMERASEME_PARITY_LIVE_GO=1 is rejected.
+pub fn reject_retired_live_go() {
     match std::env::var("SYMERASEME_PARITY_LIVE_GO").as_deref() {
-        Ok("1") => true,
-        Ok("0") | Err(std::env::VarError::NotPresent) => {
-            frozen_native_capture::manifest_bytes(std::env::consts::OS, std::env::consts::ARCH)
-                .is_none()
-        }
+        Ok("1") => panic!(
+            "SYMERASEME_PARITY_LIVE_GO=1 is retired: live Go builds were removed; use the recorded native captures"
+        ),
+        Ok("0") | Err(std::env::VarError::NotPresent) => {}
         _ => panic!("SYMERASEME_PARITY_LIVE_GO must be 0 or 1"),
     }
 }
@@ -59,9 +57,10 @@ pub struct Observation {
 }
 
 pub fn observations() -> Vec<Observation> {
+    reject_retired_live_go();
     let native = frozen_native_capture::verify(
         frozen_native_capture::manifest_bytes(std::env::consts::OS, std::env::consts::ARCH)
-            .expect("unrecorded native review target must use the actual Go producer"),
+            .expect("unsupported target: no native review capture (live Go is retired)"),
         std::env::consts::OS,
         std::env::consts::ARCH,
     );
@@ -99,7 +98,7 @@ pub fn observations() -> Vec<Observation> {
         if !go_source_pin::current_tree_bound(name) {
             continue;
         }
-        let bytes = std::fs::read(Path::new(ROOT).join(name)).unwrap();
+        let bytes = go_source_pin::current_source(ROOT, name);
         assert!(valid_bytes(expected, &bytes), "Go source drift: {name}");
     }
     let streams = [

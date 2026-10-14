@@ -27,14 +27,6 @@ fn target(os: &str, arch: &str) -> Option<&'static str> {
     }
 }
 
-pub fn live_requested() -> bool {
-    match std::env::var("SYMERASEME_PARITY_LIVE_GO").as_deref() {
-        Ok("1") => true,
-        Ok("0") | Err(std::env::VarError::NotPresent) => false,
-        _ => panic!("SYMERASEME_PARITY_LIVE_GO must be 0 or 1"),
-    }
-}
-
 fn read(directory: &str, target: &str, name: &str) -> Vec<u8> {
     assert!(TARGETS.contains(&target));
     std::fs::read(
@@ -64,10 +56,7 @@ fn verify(target: &str, manifest: &Value, bytes: &[u8]) -> Value {
             continue;
         }
         assert!(
-            valid_bytes(
-                metadata,
-                &std::fs::read(Path::new(ROOT).join(path)).unwrap()
-            ),
+            valid_bytes(metadata, &go_source_pin::current_source(ROOT, name)),
             "schedule source drift: {name}"
         );
     }
@@ -119,9 +108,7 @@ fn manifest(target: &str) -> Value {
 }
 
 pub fn fixture() -> Option<Value> {
-    if live_requested() {
-        return None;
-    }
+    super::frozen_review_oracle::reject_retired_live_go();
     let target = target(std::env::consts::OS, std::env::consts::ARCH)?;
     let bytes = read("refresh-13ddc6a4/services", target, "cli-schedule.stdout");
     Some(verify(target, &manifest(target), &bytes))

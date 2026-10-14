@@ -21,6 +21,131 @@ fn only_unrecorded_go_tests_leave_the_current_tree_pin() {
     assert!(!current_tree_bound("internal/campaign/nested/plan_test.go"));
 }
 
+const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+
+#[test]
+fn retired_capture_producers_reject_changed_bytes_and_unapproved_paths() {
+    for name in [
+        "crates/symeraseme-core/tests/campaign_smtp.rs",
+        "crates/symeraseme-core/tests/smtp_transport.rs",
+        "crates/symeraseme-cli/tests/mcp_http_headers_process.rs",
+        "crates/symeraseme-cli/tests/mcp_http_process.rs",
+        "crates/symeraseme-cli/tests/mcp_http_native_contract.rs",
+    ] {
+        let archived = std::process::Command::new("git")
+            .current_dir(ROOT)
+            .args(["cat-file", "blob"])
+            .arg(format!("13ddc6a43036d6b34706db2b82bbb5a13c40d6de:{name}"))
+            .output()
+            .unwrap();
+        assert!(archived.status.success());
+        go_source_pin::assert_retired_generator_matches_archive(ROOT, name, &archived.stdout);
+        let mut changed = archived.stdout.clone();
+        changed.push(b'!');
+        for bytes in [&changed[..], &archived.stdout[..archived.stdout.len() - 1]] {
+            let error = std::panic::catch_unwind(|| {
+                go_source_pin::assert_retired_generator_matches_archive(ROOT, name, bytes);
+            })
+            .expect_err("the actual producer binding must reject changed bytes");
+            let message = error.downcast_ref::<String>().unwrap();
+            assert!(message.contains("retired capture producer mismatch"));
+        }
+    }
+    for name in ["Cargo.lock", "../outside.rs", "unapproved.rs"] {
+        assert!(
+            std::panic::catch_unwind(|| {
+                go_source_pin::assert_retired_generator_matches_archive(ROOT, name, b"");
+            })
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn retired_go_source_bytes_come_from_the_pinned_commit() {
+    // Independent of the checkout: the digest is the recorded producer's sha256 for cmd/symeraseme/main.go.
+    let bytes = go_source_pin::retired_go_source(ROOT, "cmd/symeraseme/main.go").unwrap();
+    assert_eq!(bytes.len(), 5489);
+    let digest: String = <sha2::Sha256 as sha2::Digest>::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        digest,
+        "f7fd95376ae587dcef1aafeba74b9d3a7aa4c47ac520cd2b82903777cefe8bf7"
+    );
+    assert_eq!(
+        go_source_pin::current_source(ROOT, "go.mod"),
+        go_source_pin::retired_go_source(ROOT, "go.mod").unwrap()
+    );
+}
+
+#[test]
+fn retired_template_and_source_do_not_depend_on_checkout_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("checkout");
+    let clone = std::process::Command::new("git")
+        .args(["clone", "--shared", "--no-checkout", ROOT])
+        .arg(&root)
+        .output()
+        .unwrap();
+    assert!(clone.status.success(), "clone immutable source objects");
+    let root = root.to_str().unwrap();
+    for name in [
+        "cmd/symeraseme/main.go",
+        "internal/templating/templates/report.html.gotmpl",
+        "scripts/consent-oracle/consent_id005_fault_test.go.in",
+        "scripts/consent-oracle/consent_id005_test.go.in",
+        "scripts/consent-oracle/consent_id005_unix_test.go.in",
+        "scripts/consent-oracle/consent_id005_windows_test.go.in",
+    ] {
+        let path = std::path::Path::new(root).join(name);
+        assert!(!path.exists());
+        let archived = go_source_pin::retired_go_source(ROOT, name).unwrap();
+        assert_eq!(go_source_pin::current_source(root, name), archived);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"not the recorded Go source").unwrap();
+        assert_eq!(go_source_pin::current_source(root, name), archived);
+    }
+    // Non-Go inputs remain bound to the actual candidate, not the historical pin.
+    std::fs::write(
+        std::path::Path::new(root).join("Cargo.lock"),
+        b"candidate lock",
+    )
+    .unwrap();
+    assert_eq!(
+        go_source_pin::current_source(root, "Cargo.lock"),
+        b"candidate lock"
+    );
+}
+
+#[test]
+fn retired_go_source_rejects_unsafe_or_non_go_paths() {
+    for name in [
+        "",
+        "/etc/passwd.go",
+        "../outside.go",
+        "internal/../x.go",
+        "internal\\mcp\\server.go",
+        "Cargo.lock",
+        "tests/fixtures/x.json",
+    ] {
+        assert!(
+            go_source_pin::retired_go_source(ROOT, name).is_err(),
+            "accepted {name:?}"
+        );
+    }
+}
+
+#[test]
+fn retired_go_source_missing_object_fails_clearly() {
+    let error = go_source_pin::retired_go_source(ROOT, "internal/does/not/exist.go").unwrap_err();
+    assert!(
+        error.contains("is not in 22615ae67325c581fbe60cb0f2d3d2b2139cf900"),
+        "{error}"
+    );
+}
+
 #[test]
 fn only_first_party_release_lock_versions_may_differ() {
     // Synthetic reader controls, never Go observations or replacement captures.

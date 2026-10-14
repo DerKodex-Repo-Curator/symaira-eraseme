@@ -2,6 +2,7 @@
 
 #[path = "support/frozen_unix_process.rs"]
 mod frozen_unix_process;
+use frozen_unix_process::go_source_pin;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -81,16 +82,15 @@ fn cli_triage_matches_source_bound_go_oracle() {
     let fixture: Fixture = serde_json::from_slice(&fixture_bytes).expect("fixture parses");
     assert_eq!(fixture.schema, "symeraseme.go-oracle.cli-triage.v1");
 
-    let generator_path = Path::new(REPO_ROOT).join("rust-tests/parity/oracle/cli-triage/main.go");
-    let generator = fs::read(&generator_path).expect("Go oracle generator readable");
+    let generator =
+        go_source_pin::current_source(REPO_ROOT, "rust-tests/parity/oracle/cli-triage/main.go");
     assert_eq!(sha256(&generator), fixture.generator_sha256);
     assert_eq!(
         sha256(FAKE_AGENT_SCRIPT.as_bytes()),
         fixture.fake_agent_sha256
     );
     for source in &fixture.sources {
-        let bytes = fs::read(Path::new(REPO_ROOT).join(&source.path))
-            .unwrap_or_else(|error| panic!("read Go source {}: {error}", source.path));
+        let bytes = go_source_pin::current_source(REPO_ROOT, &source.path);
         assert_eq!(
             sha256(&bytes),
             source.sha256,
@@ -99,23 +99,7 @@ fn cli_triage_matches_source_bound_go_oracle() {
         );
     }
 
-    let observed = frozen_unix_process::observation("cli-triage").unwrap_or_else(|| {
-        let go = Command::new("go")
-            .args(["run", "./rust-tests/parity/oracle/cli-triage"])
-            .current_dir(REPO_ROOT)
-            .env("GOTOOLCHAIN", "go1.26.6")
-            .env("GOPROXY", "off")
-            .env("GOSUMDB", "off")
-            .output()
-            .expect("run source-bound Go CLI oracle");
-        assert!(
-            go.status.success(),
-            "Go CLI oracle failed:\n{}\n{}",
-            String::from_utf8_lossy(&go.stdout),
-            String::from_utf8_lossy(&go.stderr)
-        );
-        go.stdout
-    });
+    let observed = frozen_unix_process::observation("cli-triage");
     assert_eq!(observed, fixture_bytes, "Go CLI oracle fixture drifted");
 
     for case in &fixture.cases {
