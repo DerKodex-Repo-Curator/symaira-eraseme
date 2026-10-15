@@ -138,6 +138,27 @@ fn every_canonical_template_matches_the_external_golden_byte_for_byte() {
 }
 
 #[test]
+fn dashboard_preserves_nested_maps_and_half_tie_chart_widths() {
+    for (planned, width) in [(1, 13), (5, 63)] {
+        let mut context = context_for("templates/dashboard.html.j2");
+        context.data["planned"] = json!(planned);
+        context.data["sent"] = json!(8);
+        context.data["total_requests"] = json!(planned + 9);
+        context.data["campaigns"][0]["id"] = json!("nested-campaign");
+        let html = render("dashboard.html.j2", &context).unwrap();
+        assert!(
+            html.contains("<strong style=\"color: var(--gold-primary)\">nested-campaign</strong>")
+        );
+        assert!(
+            html.contains(&format!(
+                "class=\"chart-bar-fill planned\" style=\"width: {width}%\""
+            )),
+            "planned={planned}: expected half-away-from-zero chart width {width}%"
+        );
+    }
+}
+
+#[test]
 fn arbitrary_precision_numbers_are_exact_or_rejected() {
     for (input, expected) in [
         (
@@ -242,6 +263,34 @@ fn context_precedence_unicode_and_markdown_behavior_are_stable() {
     let html = render("report.html.j2", &report).unwrap();
     assert!(html.contains("&lt;sentinel&gt; &amp;"));
     assert!(!html.contains("<sentinel> &"));
+
+    for (value, expected) in [
+        (
+            json!(["<quoted>", "O'Reilly", "\n"]),
+            r#"["<quoted>", "O'Reilly", "\n"]"#,
+        ),
+        (
+            json!({"nested": [true, null, {"a": "<quoted>"}]}),
+            r#"{"nested": [True, None, {"a": "<quoted>"}]}"#,
+        ),
+    ] {
+        context.extra.insert("full_name".into(), value.clone());
+        let markdown = render("gdpr-art17.en.md.j2", &context).unwrap();
+        assert!(
+            markdown.contains(expected),
+            "legacy collection quoting: {markdown}"
+        );
+        report.data["broker_leaderboard"][0]["broker_id"] = value;
+        let html = render("report.html.j2", &report).unwrap();
+        let escaped = expected
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;");
+        assert!(html.contains(&escaped));
+        assert!(!html.contains("<quoted>"));
+    }
 }
 
 #[test]

@@ -10,7 +10,8 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use minijinja::value::{Object, Value};
+use minijinja::syntax::SyntaxConfig;
+use minijinja::value::{Object, Value, ValueKind};
 use minijinja::{AutoEscape, Environment, Error, ErrorKind, State, UndefinedBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
@@ -204,7 +205,7 @@ impl Object for FrozenDateTimeObject {
 
     fn call_method(
         self: &Arc<Self>,
-        _state: &State<'_, '_>,
+        _state: &mut State<'_, '_>,
         method: &str,
         args: &[Value],
     ) -> Result<Value, Error> {
@@ -305,6 +306,36 @@ pub fn list_templates() -> Vec<&'static str> {
     list_template_names()
 }
 
+// MiniJinja 2 used Rust debug quoting inside collections. Preserve it for
+// collection-valued extra overrides without changing their map/list behavior.
+struct LegacyDebug<'a>(&'a Value);
+
+impl fmt::Debug for LegacyDebug<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(value) = self.0.as_str() {
+            return fmt::Debug::fmt(value, f);
+        }
+        match self.0.kind() {
+            ValueKind::Map => {
+                let mut map = f.debug_map();
+                for key in self.0.try_iter().map_err(|_| fmt::Error)? {
+                    let value = self.0.get_item(&key).map_err(|_| fmt::Error)?;
+                    map.entry(&LegacyDebug(&key), &LegacyDebug(&value));
+                }
+                map.finish()
+            }
+            ValueKind::Seq => {
+                let mut list = f.debug_list();
+                for value in self.0.try_iter().map_err(|_| fmt::Error)? {
+                    list.entry(&LegacyDebug(&value));
+                }
+                list.finish()
+            }
+            _ => fmt::Debug::fmt(self.0, f),
+        }
+    }
+}
+
 /// Renders a canonical template using deterministic caller-provided data.
 pub fn render(template_name: &str, context: &RenderContext) -> Result<String, TemplateError> {
     let name = canonical_name(template_name)?;
@@ -316,12 +347,20 @@ pub fn render(template_name: &str, context: &RenderContext) -> Result<String, Te
     validate_context(context)?;
 
     let mut environment = Environment::new();
-    environment.set_keep_trailing_newline(false);
-    environment.set_trim_blocks(true);
-    environment.set_lstrip_blocks(true);
+    environment.set_syntax(
+        SyntaxConfig::builder()
+            .keep_trailing_newline(false)
+            .trim_blocks(true)
+            .lstrip_blocks(true)
+            .build()
+            .map_err(|_| TemplateError::named("template could not be parsed", name))?,
+    );
     environment.set_undefined_behavior(UndefinedBehavior::Lenient);
     environment.set_fuel(Some(MAX_RENDER_FUEL));
     environment.set_recursion_limit(MAX_RECURSION_LIMIT);
+    // Keep MiniJinja 2's half-away-from-zero chart widths.
+    // ponytail: fixed templates use no precision argument; expand if that changes.
+    environment.add_filter("round", f64::round);
     environment.set_unknown_method_callback(|_state, value, method, args| {
         if method == "get" && value.kind() == minijinja::value::ValueKind::Map {
             let key = args
@@ -352,8 +391,17 @@ pub fn render(template_name: &str, context: &RenderContext) -> Result<String, Te
             AutoEscape::None
         }
     });
+    environment.set_formatter(|out, state, value| {
+        if !matches!(value.kind(), ValueKind::Map | ValueKind::Seq) {
+            return minijinja::escape_formatter(out, state, value);
+        }
+        let mut rendered = String::new();
+        fmt::write(&mut rendered, format_args!("{:?}", LegacyDebug(value)))
+            .map_err(|_| Error::from(ErrorKind::InvalidOperation))?;
+        minijinja::escape_formatter(out, state, &Value::from(rendered))
+    });
 
-    let variables: Value = context_values(context)?.into_iter().collect();
+    let variables = Value::from_pairs(context_values(context)?);
     let template = environment
         .template_from_named_str(name, template.source)
         .map_err(|_| TemplateError::named("template could not be parsed", name))?;
@@ -664,7 +712,8 @@ fn json_value(value: JsonValue) -> Result<Value, TemplateError> {
         JsonValue::Object(values) => values
             .into_iter()
             .map(|(key, value)| Ok((Value::from(key), json_value(value)?)))
-            .collect::<Result<Value, TemplateError>>(),
+            .collect::<Result<Vec<_>, TemplateError>>()
+            .map(Value::from_pairs),
     }
 }
 
