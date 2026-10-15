@@ -273,6 +273,15 @@ fn context_precedence_unicode_and_markdown_behavior_are_stable() {
             json!({"nested": [true, null, {"a": "<quoted>"}]}),
             r#"{"nested": [True, None, {"a": "<quoted>"}]}"#,
         ),
+        // Expected bytes independently rendered by MiniJinja 2.24.0.
+        (
+            json!(["double\"quote", "back\\slash", "O'Reilly", "\n"]),
+            r#"["double\"quote", "back\\slash", "O'Reilly", "\n"]"#,
+        ),
+        (
+            json!(["Ü😀\u{e000}", 1.5, u64::MAX, true, null]),
+            r#"["Ü😀\u{e000}", 1.5, 18446744073709551615, True, None]"#,
+        ),
     ] {
         context.extra.insert("full_name".into(), value.clone());
         let markdown = render("gdpr-art17.en.md.j2", &context).unwrap();
@@ -420,6 +429,27 @@ fn bounded_rendering_rejects_string_aggregate_and_output_amplification() {
         .to_string();
     assert!(error.len() <= 256);
     assert!(!error.contains(sentinel));
+}
+
+#[test]
+fn collection_formatter_amplification_has_static_errors() {
+    let sentinel = "collection amplification sentinel";
+    let item = format!("{sentinel}{}", "\"<".repeat(24_000));
+    let collection = json!(vec![item; 20]);
+    let mut context = fixture_context();
+    context.extra.insert("full_name".into(), collection.clone());
+    assert_eq!(
+        render("gdpr-art17.en.md.j2", &context)
+            .unwrap_err()
+            .to_string(),
+        "template could not be rendered"
+    );
+    let mut report = fixture_context();
+    report.data["broker_leaderboard"][0]["broker_id"] = collection;
+    assert_eq!(
+        render("report.html.j2", &report).unwrap_err().to_string(),
+        "template could not be rendered"
+    );
 }
 
 #[test]

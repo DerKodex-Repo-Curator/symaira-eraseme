@@ -336,6 +336,25 @@ impl fmt::Debug for LegacyDebug<'_> {
     }
 }
 
+fn legacy_round(value: Value, precision: Option<i32>) -> Result<Value, Error> {
+    if value.is_integer() {
+        return Ok(value);
+    }
+    let value = f64::try_from(value)?;
+    let scale = 10_f64.powi(precision.unwrap_or(0));
+    Ok(Value::from((scale * value).round() / scale))
+}
+
+fn legacy_collection(value: &Value) -> Result<Value, Error> {
+    let mut rendered = BoundedWriter::new(MAX_OUTPUT_BYTES);
+    fmt::write(&mut rendered, format_args!("{:?}", LegacyDebug(value)))
+        .map_err(|_| Error::from(ErrorKind::InvalidOperation))?;
+    rendered
+        .finish()
+        .map(Value::from)
+        .map_err(|_| Error::from(ErrorKind::InvalidOperation))
+}
+
 /// Renders a canonical template using deterministic caller-provided data.
 pub fn render(template_name: &str, context: &RenderContext) -> Result<String, TemplateError> {
     let name = canonical_name(template_name)?;
@@ -358,9 +377,8 @@ pub fn render(template_name: &str, context: &RenderContext) -> Result<String, Te
     environment.set_undefined_behavior(UndefinedBehavior::Lenient);
     environment.set_fuel(Some(MAX_RENDER_FUEL));
     environment.set_recursion_limit(MAX_RECURSION_LIMIT);
-    // Keep MiniJinja 2's half-away-from-zero chart widths.
-    // ponytail: fixed templates use no precision argument; expand if that changes.
-    environment.add_filter("round", f64::round);
+    // Keep MiniJinja 2's integer identity and half-away-from-zero rounding.
+    environment.add_filter("round", legacy_round);
     environment.set_unknown_method_callback(|_state, value, method, args| {
         if method == "get" && value.kind() == minijinja::value::ValueKind::Map {
             let key = args
@@ -391,14 +409,13 @@ pub fn render(template_name: &str, context: &RenderContext) -> Result<String, Te
             AutoEscape::None
         }
     });
+    // ponytail: report joins string event names (map keys), not collections.
+    // Probe/port nested collection join parity before adding non-string items.
     environment.set_formatter(|out, state, value| {
         if !matches!(value.kind(), ValueKind::Map | ValueKind::Seq) {
             return minijinja::escape_formatter(out, state, value);
         }
-        let mut rendered = String::new();
-        fmt::write(&mut rendered, format_args!("{:?}", LegacyDebug(value)))
-            .map_err(|_| Error::from(ErrorKind::InvalidOperation))?;
-        minijinja::escape_formatter(out, state, &Value::from(rendered))
+        minijinja::escape_formatter(out, state, &legacy_collection(value)?)
     });
 
     let variables = Value::from_pairs(context_values(context)?);
@@ -473,6 +490,12 @@ impl BoundedWriter {
     fn finish(self) -> Result<String, TemplateError> {
         String::from_utf8(self.bytes)
             .map_err(|_| TemplateError::new("template produced invalid output"))
+    }
+}
+
+impl fmt::Write for BoundedWriter {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        self.write_all(value.as_bytes()).map_err(|_| fmt::Error)
     }
 }
 
@@ -737,6 +760,54 @@ pub fn is_html_template(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_round_preserves_integer_kinds_and_precision() {
+        let mut environment = Environment::new();
+        environment.add_filter("round", legacy_round);
+        for (source, value, expected) in [
+            ("{{ value|round }}", Value::from(12), "12"),
+            (
+                "{{ value|round }}",
+                Value::from(u64::MAX),
+                "18446744073709551615",
+            ),
+            ("{{ value|round }}", Value::from(12.5), "13.0"),
+            ("{{ value|round }}", Value::from(-12.5), "-13.0"),
+            ("{{ value|round(2) }}", Value::from(1.125), "1.13"),
+            ("{{ value|round(-1) }}", Value::from(125.0), "130.0"),
+        ] {
+            let rendered = environment
+                .template_from_str(source)
+                .unwrap()
+                .render(minijinja::context!(value => value))
+                .unwrap();
+            assert_eq!(rendered, expected);
+        }
+        for integer in [
+            Value::from(i64::MIN),
+            Value::from(u64::MAX),
+            Value::from(i128::MAX),
+            Value::from(u128::MAX),
+        ] {
+            let rounded = legacy_round(integer.clone(), Some(2)).unwrap();
+            assert!(rounded.is_integer());
+            assert_eq!(rounded, integer);
+        }
+        for invalid in [Value::from("12.5"), Value::from(true), Value::from(())] {
+            assert!(legacy_round(invalid, None).is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_collection_is_bounded_before_escaping_or_copying() {
+        let sentinel = "collection security sentinel";
+        let item = format!("{sentinel}{}", "\"<".repeat(24_000));
+        let value: Value = (0..20).map(|_| Value::from(item.clone())).collect();
+        let error = legacy_collection(&value).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidOperation);
+        assert!(!error.to_string().contains(sentinel));
+    }
 
     #[test]
     fn source_inventory_is_exactly_eleven_sorted_names() {
