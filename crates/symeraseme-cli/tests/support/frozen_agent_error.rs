@@ -13,50 +13,50 @@ const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 const RECORDS: &[(&str, &str, &str, &[u8])] = &[
     (
         "darwin/amd64",
-        "968e1a2dda9c621ba880e7b618dc49daa31970b3",
-        "8561f7c93d1346846e778b726bd26afdd16c750adf8677b4b91149da194f8251",
+        "411b5c10eb041f0233e0e86710a3dd733b0012e2",
+        "e2466409c9177b2edba5fed5ac9dd347c1ed3a3037eb198c1180724f7a5498a6",
         include_bytes!(
-            "../../../../tests/fixtures/go-frozen/refresh-968e1a2d/agent-error/darwin-amd64/agent-error.json"
+            "../../../../tests/fixtures/go-frozen/refresh-411b5c10/agent-error/darwin-amd64/agent-error.json"
         ),
     ),
     (
         "darwin/arm64",
-        "968e1a2dda9c621ba880e7b618dc49daa31970b3",
-        "2fed32377a48d412ad629ed03ec79b9033d00a2321e32e252b4b984e578606b8",
+        "411b5c10eb041f0233e0e86710a3dd733b0012e2",
+        "24b158a4f77c4bf9dd55cac408d71918dad1117af32b7f8d374c797dddb37821",
         include_bytes!(
-            "../../../../tests/fixtures/go-frozen/refresh-968e1a2d/agent-error/darwin-arm64/agent-error.json"
+            "../../../../tests/fixtures/go-frozen/refresh-411b5c10/agent-error/darwin-arm64/agent-error.json"
         ),
     ),
     (
         "linux/amd64",
-        "968e1a2dda9c621ba880e7b618dc49daa31970b3",
-        "0c2adb801764baa6bd907802dc47fd846e0ea95dd141f197b05cb748edc6ad2f",
+        "411b5c10eb041f0233e0e86710a3dd733b0012e2",
+        "efb23f7199907978a119f74e74fd8c5d90e0d109d6d235ff4c3b2a5fdc5c4bd9",
         include_bytes!(
-            "../../../../tests/fixtures/go-frozen/refresh-968e1a2d/agent-error/linux-amd64/agent-error.json"
+            "../../../../tests/fixtures/go-frozen/refresh-411b5c10/agent-error/linux-amd64/agent-error.json"
         ),
     ),
     (
         "linux/arm64",
-        "968e1a2dda9c621ba880e7b618dc49daa31970b3",
-        "ecb62ba79638a3547bc289d542e3ebb540603934077318f694af4765b0967707",
+        "411b5c10eb041f0233e0e86710a3dd733b0012e2",
+        "62ed11f344ad687b50d698ed85b02c1183b7e962e8cbc8cd04726e2e12eaae53",
         include_bytes!(
-            "../../../../tests/fixtures/go-frozen/refresh-968e1a2d/agent-error/linux-arm64/agent-error.json"
+            "../../../../tests/fixtures/go-frozen/refresh-411b5c10/agent-error/linux-arm64/agent-error.json"
         ),
     ),
     (
         "windows/amd64",
-        "968e1a2dda9c621ba880e7b618dc49daa31970b3",
-        "ef658660bcbc438683c4c11b291fc646b6e6d53679aa41e5bc7b53b53f5975cf",
+        "411b5c10eb041f0233e0e86710a3dd733b0012e2",
+        "9c62582862c06ed7d20b49f28535d94db5544501c4ccc732114a34a53c9b5e04",
         include_bytes!(
-            "../../../../tests/fixtures/go-frozen/refresh-968e1a2d/agent-error/windows-amd64/agent-error.json"
+            "../../../../tests/fixtures/go-frozen/refresh-411b5c10/agent-error/windows-amd64/agent-error.json"
         ),
     ),
     (
         "windows/arm64",
-        "968e1a2dda9c621ba880e7b618dc49daa31970b3",
-        "17703c36abf620a17dc8f3b322be83626e2101a97e900e0a62c16f4f05e7603b",
+        "411b5c10eb041f0233e0e86710a3dd733b0012e2",
+        "c0fc55cf750268a926a293f06981eb9d9dbd289d0479012ff48e705ff8e3b26c",
         include_bytes!(
-            "../../../../tests/fixtures/go-frozen/refresh-968e1a2d/agent-error/windows-arm64/agent-error.json"
+            "../../../../tests/fixtures/go-frozen/refresh-411b5c10/agent-error/windows-arm64/agent-error.json"
         ),
     ),
 ];
@@ -116,34 +116,8 @@ fn verify(raw: &[u8], pin: &str, revision: &str, target: &str) -> Value {
             );
             assert_eq!(recorded["bytes"], archive.stdout.len(), "{name}");
             assert_eq!(recorded["sha256"], digest(&archive.stdout), "{name}");
-            if matches!(
-                name.as_str(),
-                "crates/symeraseme-cli/tests/mcp_agent_error_json_windows.rs"
-                    | "crates/symeraseme-cli/tests/support/capture_agent_error.rs"
-            ) {
-                // Retired producers retain their independent pin and recorded
-                // checkout policy; all other inputs remain current-tree bound.
-                let pinned = Command::new("git")
-                    .args([
-                        "-c",
-                        &format!("core.autocrlf={autocrlf}"),
-                        "cat-file",
-                        "--filters",
-                        &format!("{}:{name}", go_source_pin::RETIREMENT_SOURCE_REVISION),
-                    ])
-                    .current_dir(ROOT)
-                    .output()
-                    .expect("read independently pinned agent-error producer");
-                assert!(
-                    pinned.status.success(),
-                    "retired agent-error producer unavailable"
-                );
-                assert_eq!(
-                    archive.stdout, pinned.stdout,
-                    "retired agent-error producer: {name}"
-                );
-            } else if go_source_pin::current_tree_bound(name) {
-                let current = go_source_pin::current_source(ROOT, name);
+            if go_source_pin::current_tree_bound(name) {
+                let current = std::fs::read(Path::new(ROOT).join(path)).unwrap();
                 go_source_pin::assert_current_matches_archive(name, &archive.stdout, &current);
             }
         }
@@ -202,14 +176,14 @@ impl Corpus {
     }
 }
 
-pub fn observations() -> Corpus {
-    assert!(
-        std::env::var_os("SYMERASEME_CAPTURE_AGENT_ERROR").is_none(),
-        "live Go capture is retired; use the recorded native agent-error observations"
-    );
+pub fn observations() -> Option<Corpus> {
+    if std::env::var_os("SYMERASEME_CAPTURE_AGENT_ERROR").is_some_and(|value| !value.is_empty()) {
+        return None;
+    }
     match std::env::var("SYMERASEME_PARITY_LIVE_GO").as_deref() {
+        Ok("1") => return None,
         Ok("0") | Err(std::env::VarError::NotPresent) => {}
-        _ => panic!("live Go execution is retired; SYMERASEME_PARITY_LIVE_GO must be 0 or unset"),
+        _ => panic!("SYMERASEME_PARITY_LIVE_GO must be 0 or 1"),
     }
     let target = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("linux", "x86_64") => "linux/amd64",
@@ -218,12 +192,9 @@ pub fn observations() -> Corpus {
         ("macos", "aarch64") => "darwin/arm64",
         ("windows", "x86_64") => "windows/amd64",
         ("windows", "aarch64") => "windows/arm64",
-        _ => panic!("unrecorded native agent-error target"),
+        _ => return None,
     };
-    let (_, revision, pin, raw) = RECORDS
-        .iter()
-        .find(|record| record.0 == target)
-        .expect("recorded native agent-error target");
+    let (_, revision, pin, raw) = RECORDS.iter().find(|record| record.0 == target)?;
     let record = verify(raw, pin, revision, target);
     let mut corrupt = raw.to_vec();
     corrupt.push(b'!');
@@ -242,5 +213,5 @@ pub fn observations() -> Corpus {
         ))
         .is_err()
     );
-    Corpus(record)
+    Some(Corpus(record))
 }
