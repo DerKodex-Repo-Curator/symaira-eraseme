@@ -66,7 +66,7 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess
           root = pathlib.Path.cwd().resolve()
-          candidate = '6b0468bea59347be6aa8e52458b4bb9d81494819'
+          candidate = 'b811dd547f802ccc0f49a9469ccc8bb6a84a3606'
           retirement = '22615ae67325c581fbe60cb0f2d3d2b2139cf900'
           def git(*args):
               return subprocess.check_output(['git', *args], cwd=root)
