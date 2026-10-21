@@ -47,7 +47,8 @@ def main():
         commands.append(('wire', 'symeraseme-cli', ['--test', 'mcp_http_process'],
                          ['go_oracle_http_wire_transcripts_match', '--', '--exact'], 1))
     for name, package, targets, selection, expected in commands:
-        command = ['cargo', '+1.98.0', 'test', '-p', package, *targets,
+        command = ['cargo', '+1.98.0', 'test', '--manifest-path', str(source / 'Cargo.toml'),
+                   '-p', package, *targets,
                    '--locked', '--offline', *selection]
         # Original subprocess capture limits and deadlines are unchanged.
         log = output / ('native-reference-' + name + '.log')
